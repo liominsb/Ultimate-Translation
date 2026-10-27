@@ -111,8 +111,17 @@ def main():
     hwnd = user32.FindWindowW("Notepad", None)
     if hwnd:
         user32.ShowWindow(hwnd, 9)
+        # 单纯 SetForegroundWindow 会被系统拒绝（调用方不是前台进程），
+        # 用 AttachThreadInput 借用前台线程的输入队列才行
+        k32 = ctypes.windll.kernel32
+        fg = user32.GetForegroundWindow()
+        tid_fg = user32.GetWindowThreadProcessId(fg, None)
+        tid_cur = k32.GetCurrentThreadId()
+        user32.AttachThreadInput(tid_cur, tid_fg, True)
         user32.SetForegroundWindow(hwnd)
-        time.sleep(0.6)
+        user32.BringWindowToTop(hwnd)
+        user32.AttachThreadInput(tid_cur, tid_fg, False)
+        time.sleep(0.8)
 
     chord(VK_CONTROL, VK_A)
     time.sleep(0.3)
@@ -122,6 +131,9 @@ def main():
     hits = find_popup()
     print("popups:", hits)
     if hits:
+        r = wt.RECT()
+        user32.GetWindowRect(hits[0], ctypes.byref(r))
+        print("window size: %dx%d" % (r.right - r.left, r.bottom - r.top))
         ok = capture(hits[0], SHOT)
         print("capture:", ok, SHOT)
 

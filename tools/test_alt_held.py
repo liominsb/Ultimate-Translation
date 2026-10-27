@@ -96,6 +96,9 @@ def main():
     hits = find_popup()
     print("popups:", hits)
     if hits:
+        r = wt.RECT()
+        user32.GetWindowRect(hits[0], ctypes.byref(r))
+        print("window size: %dx%d" % (r.right - r.left, r.bottom - r.top))
         capture(hits[0], SHOT)
         print("shot:", SHOT)
 

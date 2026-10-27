@@ -20,6 +20,8 @@
 #define WM_TRANSLATE_DELTA  (WM_APP + 10)
 #define WM_TRANSLATE_DONE   (WM_APP + 11)
 #define WM_ENGINE_READY     (WM_APP + 12)
+#define WM_TRANSLATE_SOURCE (WM_APP + 13)   // 取词完成，带回原文
+#define WM_TRANSLATE_STATUS (WM_APP + 14)   // 只更新一行提示（取词失败/语种不支持等）
 
 #define HOTKEY_ID_TRANSLATE 1
 #define IDM_TRANSLATE 2001
@@ -144,21 +146,94 @@ void StartEngineAsync() {
     CloseHandle(CreateThread(nullptr, 0, EngineWarmupThread, nullptr, 0, nullptr));
 }
 
-DWORD WINAPI TranslateThread(LPVOID param) {
-    std::wstring text = *(std::wstring*)param;
-    delete (std::wstring*)param;
+// 工作线程：取词 -> 校验 -> 翻译。全程不占主线程，
+// 主线程只负责收消息、画窗，所以按热键时界面不会卡。
+DWORD WINAPI WorkThread(LPVOID param) {
+    delete (POINT*)param;   // 位置在主线程按热键时就定了，这里只是接手所有权
+
+    DWORD tStart = GetTickCount();
+    std::wstring text = Trim(CaptureSelectedText());
+    DWORD tCap = GetTickCount();
+
+    if (text.empty()) {
+        PostMessageW(g_hwnd, WM_TRANSLATE_STATUS, 0,
+                     (LPARAM)new std::wstring(L"没有取到选中的文字"));
+        g_busy = false;
+        return 0;
+    }
 
     Lang lang = DetectLang(text);
+    if (lang == Lang::Chinese) {
+        PostMessageW(g_hwnd, WM_TRANSLATE_SOURCE, 0, (LPARAM)new std::wstring(text));
+        PostMessageW(g_hwnd, WM_TRANSLATE_STATUS, 0,
+                     (LPARAM)new std::wstring(L"选中的已经是中文"));
+        g_busy = false;
+        return 0;
+    }
+    if (lang == Lang::Unknown) {
+        PostMessageW(g_hwnd, WM_TRANSLATE_SOURCE, 0, (LPARAM)new std::wstring(text));
+        PostMessageW(g_hwnd, WM_TRANSLATE_STATUS, 0,
+                     (LPARAM)new std::wstring(L"目前只支持英文和日文"));
+        g_busy = false;
+        return 0;
+    }
+    // 误全选整页时会取到几千字，硬塞给 ctx=512 的模型只会被截断成半句，
+    // 宁可明确拒绝，也别给出残缺译文
+    if (text.size() > 500) {
+        PostMessageW(g_hwnd, WM_TRANSLATE_SOURCE, 0, (LPARAM)new std::wstring(text));
+        PostMessageW(g_hwnd, WM_TRANSLATE_STATUS, 0,
+                     (LPARAM)new std::wstring(L"选中的内容太长（超过 500 字），请分段选择"));
+        g_busy = false;
+        return 0;
+    }
+
+    // 先把原文填进弹窗，用户能立刻看到确实抓到了什么
+    PostMessageW(g_hwnd, WM_TRANSLATE_SOURCE, 0, (LPARAM)new std::wstring(text));
+
+    // 不能只看 g_engineReady：llama-server 可能已经崩了或者被手动杀了
+    if (!g_engineReady || !EngineRunning()) {
+        if (g_engineReady) {
+            Log(L"引擎进程已不存在，标记为未就绪");
+            g_engineReady = false;
+        }
+        bool starting = g_engineStarting.load();
+        StartEngineAsync();
+        PostMessageW(g_hwnd, WM_TRANSLATE_STATUS, 0,
+                     (LPARAM)new std::wstring(starting
+                         ? L"引擎正在启动，请稍候再试"
+                         : L"正在启动翻译引擎，几秒后再按一次 " + g_cfg.hotkey));
+        g_busy = false;
+        return 0;
+    }
+
     std::wstring err;
     DWORD begin = GetTickCount();
 
-    TranslateText(text, LangName(lang), g_cfg.targetLang,
-                  [](const std::wstring& piece) {
-                      PostMessageW(g_hwnd, WM_TRANSLATE_DELTA, 0,
-                                   (LPARAM)new std::wstring(piece));
-                  },
-                  err);
+    // 流式节流：首字立刻发，之后每 16ms 合并一次。
+    // 不节流的话一句话要触发三十来次重排和重绘。
+    std::wstring pending;
+    DWORD lastPost = GetTickCount();
+    bool sentAny = false;
 
+    auto onDelta = [&](const std::wstring& piece) {
+        pending += piece;
+        DWORD now = GetTickCount();
+        if (!sentAny || now - lastPost >= 16 || pending.size() >= 12) {
+            PostMessageW(g_hwnd, WM_TRANSLATE_DELTA, 0, (LPARAM)new std::wstring(pending));
+            pending.clear();
+            lastPost = now;
+            sentAny = true;
+        }
+    };
+
+    TranslateText(text, LangName(lang), g_cfg.targetLang, onDelta, err);
+
+    if (!pending.empty()) {
+        PostMessageW(g_hwnd, WM_TRANSLATE_DELTA, 0, (LPARAM)new std::wstring(pending));
+    }
+
+    DWORD capMs = tCap - tStart;
+    if (capMs > 200) Log(L"取词偏慢：" + std::to_wstring(capMs) + L"ms");
     // 正常路径不写日志，只有出错才留痕
     if (!err.empty()) {
         Log(L"翻译失败（" + std::to_wstring(text.size()) + L" 字）：" + err);
@@ -178,54 +253,12 @@ void DoTranslate() {
     POINT pt;
     GetCursorPos(&pt);
 
-    std::wstring text = Trim(CaptureSelectedText());
-
-    if (text.empty()) {
-        PopupShow(pt, L"", L"没有取到选中的文字");
-        g_busy = false;
-        return;
-    }
-
-    Lang lang = DetectLang(text);
-    if (lang == Lang::Chinese) {
-        PopupShow(pt, text, L"选中的已经是中文");
-        g_busy = false;
-        return;
-    }
-    if (lang == Lang::Unknown) {
-        PopupShow(pt, text, L"目前只支持英文和日文");
-        g_busy = false;
-        return;
-    }
-    // 误全选整页时会取到几千字，直接塞给 ctx=512 的模型只会被截断成半句。
-    // 宁可明确拒绝，也别给出残缺译文。
-    if (text.size() > 500) {
-        PopupShow(pt, text, L"选中的内容太长（超过 500 字），请分段选择");
-        g_busy = false;
-        return;
-    }
-    // 不能只看 g_engineReady：llama-server 可能已经崩了、或者被用户手动杀了，
-    // 那时候标志位还是 true，但请求必然失败。EngineRunning 会查进程是否还活着。
-    if (!g_engineReady || !EngineRunning()) {
-        if (g_engineReady) {
-            Log(L"引擎进程已不存在，标记为未就绪");
-            g_engineReady = false;
-        }
-        // 引擎没起来就顺手再拉一次，而不是让用户去重启整个程序。
-        // 早期版本 g_engineReady=false 之后就成了死局。
-        if (!g_engineStarting) {
-            StartEngineAsync();
-            PopupShow(pt, text, L"正在启动翻译引擎，几秒后再按一次 " + g_cfg.hotkey);
-        } else {
-            PopupShow(pt, text, L"引擎正在启动，请稍候再试");
-        }
-        g_busy = false;
-        return;
-    }
-
+    // 立刻弹窗给反馈。取词要等目标程序写剪贴板，快的 20ms、Chromium 慢的 200ms，
+    // 这段空窗期用户本来对着桌面发呆。
     g_accum.clear();
-    PopupShow(pt, text, L"翻译中…");
-    CloseHandle(CreateThread(nullptr, 0, TranslateThread, new std::wstring(text), 0, nullptr));
+    PopupShow(pt, L"", L"正在读取选中文字…");
+
+    CloseHandle(CreateThread(nullptr, 0, WorkThread, new POINT(pt), 0, nullptr));
 }
 
 void ShowTrayMenu(HWND hwnd) {
@@ -257,6 +290,20 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (LOWORD(lp) == WM_RBUTTONUP) ShowTrayMenu(hwnd);
             else if (LOWORD(lp) == WM_LBUTTONDBLCLK) DoTranslate();
             return 0;
+
+        case WM_TRANSLATE_SOURCE: {
+            std::wstring* src = (std::wstring*)lp;
+            if (PopupIsVisible()) PopupSetContent(*src, L"翻译中…");
+            delete src;
+            return 0;
+        }
+
+        case WM_TRANSLATE_STATUS: {
+            std::wstring* hint = (std::wstring*)lp;
+            if (PopupIsVisible()) PopupSetResult(*hint);
+            delete hint;
+            return 0;
+        }
 
         case WM_TRANSLATE_DELTA: {
             std::wstring* piece = (std::wstring*)lp;
@@ -301,6 +348,7 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
 
         case WM_DESTROY:
+
             EngineStop();
             RemoveTrayIcon();
             PopupHide();
@@ -353,6 +401,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     }
 
     AddTrayIcon(g_hwnd);
+
 
     // 引擎异步预热，不阻塞消息循环
     StartEngineAsync();

@@ -11,7 +11,10 @@ void PopupInit(HINSTANCE hInst);
 // 在鼠标附近弹窗。source 原文（灰字小字，可空），result 译文/提示语
 void PopupShow(POINT screenPt, const std::wstring& source, const std::wstring& result);
 
-// 流式更新译文，窗口位置不变，高度随内容重新计算
+// 只换内容不重建窗口：取词完成后把「正在读取…」替换成原文，比重建省一次 CreateWindow
+void PopupSetContent(const std::wstring& source, const std::wstring& result);
+
+// 流式更新译文，窗口位置不变，高度变了才重排
 void PopupSetResult(const std::wstring& result);
 
 void PopupHide();
