@@ -30,7 +30,9 @@ void Config::Load(const std::wstring& exeDir) {
     std::wstring ini = IniPath(exeDir);
     hotkey = ReadStr(ini, L"hotkey", L"Alt+D");
     // target_lang 不落盘：Windows 的 ini API 按系统 ANSI 代码页写文件，
-    // 写中文进去再用 UTF-8 编辑器打开就是乱码。目标语言固定中文，不暴露成配置项。
+    // 写中文进去再用 UTF-8 编辑器打开就是乱码。方向用 ASCII 的 zh2en 表示。
+    zh2en = ReadInt(ini, L"zh2en", 0) != 0;
+    targetLang = zh2en ? L"英语" : L"中文";
     port = ReadInt(ini, L"port", 58088);
     maxTokens = ReadInt(ini, L"max_tokens", 256);
     temperature = ReadDouble(ini, L"temperature", 0.7);
@@ -48,6 +50,7 @@ void Config::Load(const std::wstring& exeDir) {
 void Config::Save(const std::wstring& exeDir) const {
     std::wstring ini = IniPath(exeDir);
     WriteStr(ini, L"hotkey", hotkey);
+    WriteStr(ini, L"zh2en", zh2en ? L"1" : L"0");
     WriteStr(ini, L"port", std::to_wstring(port));
     WriteStr(ini, L"max_tokens", std::to_wstring(maxTokens));
 

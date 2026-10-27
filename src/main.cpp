@@ -27,6 +27,7 @@
 #define IDM_TRANSLATE 2001
 #define IDM_RELOAD    2002
 #define IDM_EXIT      2003
+#define IDM_TOGGLE_DIR 2004
 
 namespace {
 
@@ -163,19 +164,33 @@ DWORD WINAPI WorkThread(LPVOID param) {
     }
 
     Lang lang = DetectLang(text);
-    if (lang == Lang::Chinese) {
-        PostMessageW(g_hwnd, WM_TRANSLATE_SOURCE, 0, (LPARAM)new std::wstring(text));
-        PostMessageW(g_hwnd, WM_TRANSLATE_STATUS, 0,
-                     (LPARAM)new std::wstring(L"选中的已经是中文"));
-        g_busy = false;
-        return 0;
-    }
-    if (lang == Lang::Unknown) {
-        PostMessageW(g_hwnd, WM_TRANSLATE_SOURCE, 0, (LPARAM)new std::wstring(text));
-        PostMessageW(g_hwnd, WM_TRANSLATE_STATUS, 0,
-                     (LPARAM)new std::wstring(L"目前只支持英文和日文"));
-        g_busy = false;
-        return 0;
+    bool zh2en = g_cfg.zh2en;
+
+    if (zh2en) {
+        // 中译英模式下只认中文，选到别的语种就明确说清楚，
+        // 免得用户以为切换没生效
+        if (lang != Lang::Chinese) {
+            PostMessageW(g_hwnd, WM_TRANSLATE_SOURCE, 0, (LPARAM)new std::wstring(text));
+            PostMessageW(g_hwnd, WM_TRANSLATE_STATUS, 0,
+                         (LPARAM)new std::wstring(L"当前是「中文 → 英文」模式，请选中中文"));
+            g_busy = false;
+            return 0;
+        }
+    } else {
+        if (lang == Lang::Chinese) {
+            PostMessageW(g_hwnd, WM_TRANSLATE_SOURCE, 0, (LPARAM)new std::wstring(text));
+            PostMessageW(g_hwnd, WM_TRANSLATE_STATUS, 0,
+                         (LPARAM)new std::wstring(L"选中的已经是中文，可右键托盘切到「中文翻译英文」"));
+            g_busy = false;
+            return 0;
+        }
+        if (lang == Lang::Unknown) {
+            PostMessageW(g_hwnd, WM_TRANSLATE_SOURCE, 0, (LPARAM)new std::wstring(text));
+            PostMessageW(g_hwnd, WM_TRANSLATE_STATUS, 0,
+                         (LPARAM)new std::wstring(L"目前只支持英文和日文"));
+            g_busy = false;
+            return 0;
+        }
     }
     // 误全选整页时会取到几千字，硬塞给 ctx=512 的模型只会被截断成半句，
     // 宁可明确拒绝，也别给出残缺译文
@@ -269,6 +284,10 @@ void ShowTrayMenu(HWND hwnd) {
     AppendMenuW(menu, MF_STRING, IDM_TRANSLATE,
                 (L"翻译选中文字\t" + g_cfg.hotkey).c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    // 勾选状态就代表当前方向，不另开设置页
+    AppendMenuW(menu, MF_STRING | (g_cfg.zh2en ? MF_CHECKED : 0), IDM_TOGGLE_DIR,
+                L"中文翻译英文");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_RELOAD, L"重载翻译引擎");
     AppendMenuW(menu, MF_STRING, IDM_EXIT, L"退出");
 
@@ -335,6 +354,12 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             switch (LOWORD(wp)) {
                 case IDM_TRANSLATE:
                     DoTranslate();
+                    break;
+                case IDM_TOGGLE_DIR:
+                    g_cfg.zh2en = !g_cfg.zh2en;
+                    // targetLang 跟着切，翻译线程读的是它
+                    g_cfg.targetLang = g_cfg.zh2en ? L"英语" : L"中文";
+                    g_cfg.Save(g_exeDir);
                     break;
                 case IDM_RELOAD:
                     EngineStop();

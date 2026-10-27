@@ -8,7 +8,8 @@ struct Config {
     std::wstring hotkey = L"Alt+D";   // 触发键，字符串形式便于显示和编辑
     UINT hotkeyMod = MOD_ALT;         // 解析后的修饰键
     UINT hotkeyVk = 'D';              // 解析后的主键
-    std::wstring targetLang = L"中文"; // 目标语言固定中文，不落盘（避免 ini 编码问题）
+    std::wstring targetLang = L"中文"; // 目标语言，由 zh2en 决定
+    bool zh2en = false;               // 反向模式：中文 -> 英文；关闭时是 英/日 -> 中文
     int port = 58088;                 // llama-server 端口
     int maxTokens = 256;              // 单次翻译最多生成多少 token
     double temperature = 0.7;         // 官方推荐值
