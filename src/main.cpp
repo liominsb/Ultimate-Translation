@@ -176,22 +176,15 @@ DWORD WINAPI WorkThread(LPVOID param) {
             g_busy = false;
             return 0;
         }
-    } else {
-        if (lang == Lang::Chinese) {
-            PostMessageW(g_hwnd, WM_TRANSLATE_SOURCE, 0, (LPARAM)new std::wstring(text));
-            PostMessageW(g_hwnd, WM_TRANSLATE_STATUS, 0,
-                         (LPARAM)new std::wstring(L"选中的已经是中文，可右键托盘切到「中文翻译英文」"));
-            g_busy = false;
-            return 0;
-        }
-        if (lang == Lang::Unknown) {
-            PostMessageW(g_hwnd, WM_TRANSLATE_SOURCE, 0, (LPARAM)new std::wstring(text));
-            PostMessageW(g_hwnd, WM_TRANSLATE_STATUS, 0,
-                         (LPARAM)new std::wstring(L"目前只支持英文和日文"));
-            g_busy = false;
-            return 0;
-        }
+    } else if (lang == Lang::Chinese) {
+        PostMessageW(g_hwnd, WM_TRANSLATE_SOURCE, 0, (LPARAM)new std::wstring(text));
+        PostMessageW(g_hwnd, WM_TRANSLATE_STATUS, 0,
+                     (LPARAM)new std::wstring(L"选中的已经是中文，可右键托盘切到「中文翻译英文」"));
+        g_busy = false;
+        return 0;
     }
+    // 其余语种一律交给模型。Hy-MT2 是 33 语模型，法德西韩俄都能自己认，
+    // 检测器只负责拦中文、以及给日语标个准源语言，不再做「只支持英日」的限制。
     // 误全选整页时会取到几千字，硬塞给 ctx=512 的模型只会被截断成半句，
     // 宁可明确拒绝，也别给出残缺译文
     if (text.size() > 500) {
@@ -241,7 +234,11 @@ DWORD WINAPI WorkThread(LPVOID param) {
         }
     };
 
-    TranslateText(text, LangName(lang), g_cfg.targetLang, onDelta, err);
+    // 日语有假名这个硬特征，标出来更稳；其余语种不给源语言提示，
+    // 让模型自己判断——检测器分不清英语和法语，标错了反而是干扰
+    std::wstring srcName = (lang == Lang::Japanese) ? L"日语" : L"";
+
+    TranslateText(text, srcName, g_cfg.targetLang, onDelta, err);
 
     if (!pending.empty()) {
         PostMessageW(g_hwnd, WM_TRANSLATE_DELTA, 0, (LPARAM)new std::wstring(pending));

@@ -339,8 +339,16 @@ std::wstring TranslateText(const std::wstring& text,
         return L"";
     }
 
-    std::wstring prompt = L"将以下" + srcLang + L"文本翻译为" + tgtLang +
-                          L"，注意只需要输出翻译后的结果，不要额外解释：\n\n" + text;
+    // 知道源语言就写进去，不知道就不提，让模型自己判断。
+    // 硬写一个错的源语言（比如把法语标成英语）反而会干扰它。
+    std::wstring prompt;
+    if (srcLang.empty()) {
+        prompt = L"将以下文本翻译为" + tgtLang +
+                 L"，注意只需要输出翻译后的结果，不要额外解释：\n\n" + text;
+    } else {
+        prompt = L"将以下" + srcLang + L"文本翻译为" + tgtLang +
+                 L"，注意只需要输出翻译后的结果，不要额外解释：\n\n" + text;
+    }
 
     char sampling[160];
     snprintf(sampling, sizeof(sampling),
