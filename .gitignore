@@ -1,0 +1,22 @@
+# 构建产物
+build/
+*.obj
+*.o
+
+# 推理运行时与模型：体积大，随安装包分发，不进仓库
+runtime/
+models/
+*.gguf
+
+# 运行期文件
+logs/
+config.ini
+*.log
+
+# 可执行文件
+*.exe
+*.dll
+
+# 临时目录
+_tmp/
+_probe/
