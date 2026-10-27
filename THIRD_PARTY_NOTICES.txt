@@ -1,0 +1,54 @@
+本发行版包含以下第三方组件，各自遵循其原始许可证。
+
+================================================================
+1. llama.cpp
+================================================================
+来源    ：https://github.com/ggml-org/llama.cpp
+版本    ：b11118
+许可证  ：MIT License
+版权    ：Copyright (c) The ggml authors
+涉及文件：runtime/ 目录下的 llama-server.exe、llama*.dll、ggml*.dll、mtmd.dll、
+          llama-common.dll
+
+MIT License
+
+Copyright (c) The ggml authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================
+2. LLVM OpenMP Runtime (libomp)
+================================================================
+来源    ：https://openmp.llvm.org/
+许可证  ：Apache License 2.0 with LLVM Exceptions
+涉及文件：runtime/libomp.dll
+完整文本：见 runtime/LICENSE-LLVM-OpenMP
+
+================================================================
+3. Hy-MT2-1.8B 模型
+================================================================
+来源    ：https://modelscope.cn/models/Tencent-Hunyuan/Hy-MT2-1.8B-GGUF
+许可证  ：Apache License 2.0
+版权    ：Copyright (C) 2026 Tencent
+说明    ：模型权重不包含在本发行版中，需用户自行下载。
+
+================================================================
+4. 界面字体
+================================================================
+使用系统自带的 Microsoft YaHei UI，不打包、不嵌入字体文件。
