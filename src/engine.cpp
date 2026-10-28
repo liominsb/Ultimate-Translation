@@ -1,6 +1,7 @@
 #include "engine.h"
 #include "logger.h"
 #include <winhttp.h>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -9,6 +10,8 @@ namespace {
 
 HANDLE g_hProcess = nullptr;
 EngineConfig g_cfg;
+// 长文本分块翻译时，块间检查这个标记来支持中途打断
+std::atomic<bool> g_cancel{false};
 
 // ---------- 编码转换 ----------
 
@@ -245,6 +248,59 @@ bool HttpPostStream(const std::string& body,
     return ok;
 }
 
+// ---------- 长文本切块 ----------
+
+// 单块原文上限。ctx 8192 下：800 字（约 800-1200 token）+
+// 指令 + 最多 2048 token 输出，还有富余。
+const size_t kChunkChars = 800;
+
+// 从 limit 往前找断点，尽量不把句子劈成两半。
+// 一次把整段塞进 ctx 会被静默截断成半句话，切开请求才是正确做法。
+size_t FindBreak(const std::wstring& s, size_t begin, size_t limit) {
+    for (size_t i = limit; i > begin; --i) {
+        wchar_t c = s[i - 1];
+        if (c == L'\n' || c == L'。' || c == L'！' || c == L'？' ||
+            c == L'.' || c == L'!' || c == L'?' || c == L'；' || c == L';') {
+            return i;
+        }
+    }
+    // 没有句末标点就退一步认逗号/空格，总比硬切在词中间强
+    for (size_t i = limit; i > begin; --i) {
+        wchar_t c = s[i - 1];
+        if (c == L'，' || c == L',' || c == L'、' || c == L' ') return i;
+    }
+    return limit;
+}
+
+// 一块要生成多少 token。中文译英文的字数比大致 1:1.5，
+// 按字数的两倍给，被 max_tokens 截断比慢一点难受得多。
+int MaxTokensFor(size_t chars) {
+    int t = (int)chars * 2;
+    if (t < g_cfg.maxTokens) t = g_cfg.maxTokens;
+    if (t > 4096) t = 4096;
+    return t;
+}
+
+// 知道源语言就写进去，不知道就不提，让模型自己判断。
+// 硬写一个错的源语言（比如把法语标成英语）反而会干扰它。
+std::wstring BuildPrompt(const std::wstring& text,
+                         const std::wstring& srcLang,
+                         const std::wstring& tgtLang) {
+    if (srcLang.empty()) {
+        return L"将以下文本翻译为" + tgtLang +
+               L"，注意只需要输出翻译后的结果，不要额外解释：\n\n" + text;
+    }
+    return L"将以下" + srcLang + L"文本翻译为" + tgtLang +
+           L"，注意只需要输出翻译后的结果，不要额外解释：\n\n" + text;
+}
+
+bool IsBlank(const std::wstring& s) {
+    for (wchar_t c : s) {
+        if (c != L' ' && c != L'\t' && c != L'\r' && c != L'\n') return false;
+    }
+    return true;
+}
+
 } // namespace
 
 bool EngineStart(const EngineConfig& cfg) {
@@ -329,6 +385,10 @@ bool EngineRunning() {
     return g_hProcess && WaitForSingleObject(g_hProcess, 0) != WAIT_OBJECT_0;
 }
 
+void EngineCancel() {
+    g_cancel = true;
+}
+
 std::wstring TranslateText(const std::wstring& text,
                            const std::wstring& srcLang,
                            const std::wstring& tgtLang,
@@ -339,58 +399,77 @@ std::wstring TranslateText(const std::wstring& text,
         return L"";
     }
 
-    // 知道源语言就写进去，不知道就不提，让模型自己判断。
-    // 硬写一个错的源语言（比如把法语标成英语）反而会干扰它。
-    std::wstring prompt;
-    if (srcLang.empty()) {
-        prompt = L"将以下文本翻译为" + tgtLang +
-                 L"，注意只需要输出翻译后的结果，不要额外解释：\n\n" + text;
-    } else {
-        prompt = L"将以下" + srcLang + L"文本翻译为" + tgtLang +
-                 L"，注意只需要输出翻译后的结果，不要额外解释：\n\n" + text;
+    std::wstring result;
+    std::string pending;    // 还没凑成完整一行的 SSE
+    std::string leftover;   // 还没凑成完整字符的 UTF-8 尾巴
+
+    g_cancel = false;
+
+    // 一块一次请求。块内照旧流式回调，所以长文本也是边译边出，不是等全译完再显示。
+    auto translateChunk = [&](const std::wstring& chunk, std::wstring& chunkErr) -> bool {
+        char sampling[192];
+        snprintf(sampling, sizeof(sampling),
+                 "\"}],\"temperature\":%.2f,\"top_p\":0.6,\"top_k\":20,"
+                 "\"repeat_penalty\":1.05,\"max_tokens\":%d,\"stream\":true}",
+                 g_cfg.temperature, MaxTokensFor(chunk.size()));
+
+        std::string body =
+            "{\"model\":\"local\",\"messages\":[{\"role\":\"user\",\"content\":\"" +
+            JsonEscape(WideToUtf8(BuildPrompt(chunk, srcLang, tgtLang))) + sampling;
+
+        pending.clear();
+        leftover.clear();
+
+        return HttpPostStream(body, [&](const std::string& piece) {
+            pending += piece;
+
+            size_t pos;
+            while ((pos = pending.find('\n')) != std::string::npos) {
+                std::string line = pending.substr(0, pos);
+                pending.erase(0, pos + 1);
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+
+                if (line.rfind("data: ", 0) != 0) continue;
+                std::string payload = line.substr(6);
+                if (payload.empty() || payload == "[DONE]") continue;
+
+                std::string delta = ExtractDelta(payload);
+                if (delta.empty()) continue;
+
+                leftover += delta;
+                size_t safe = Utf8CompleteLen(leftover);
+                if (safe == 0) continue;   // 整个字符还没收全，等下一块
+
+                std::wstring piece2 = Utf8ToWide(leftover.substr(0, safe));
+                leftover.erase(0, safe);
+                result += piece2;
+                if (onDelta) onDelta(piece2);
+            }
+        }, chunkErr);
+    };
+
+    size_t pos = 0;
+    while (pos < text.size()) {
+        if (g_cancel) return result;   // 用户按了热键要翻新的，剩下的块不译了
+
+        size_t end = (text.size() - pos > kChunkChars)
+                         ? FindBreak(text, pos, pos + kChunkChars)
+                         : text.size();
+
+        std::wstring chunk = text.substr(pos, end - pos);
+        pos = end;
+
+        if (IsBlank(chunk)) continue;   // 段落间的空行不值得发一次请求
+
+        std::wstring chunkErr;
+        if (!translateChunk(chunk, chunkErr)) {
+            // 已经译出的部分照样返回，UI 上至少能看到翻了什么，
+            // 而不是整段变一句「翻译失败」
+            error = chunkErr;
+            return result;
+        }
     }
 
-    char sampling[160];
-    snprintf(sampling, sizeof(sampling),
-             "\"}],\"temperature\":%.2f,\"top_p\":0.6,\"top_k\":20,"
-             "\"repeat_penalty\":1.05,\"max_tokens\":256,\"stream\":true}",
-             g_cfg.temperature);
-
-    std::string body =
-        "{\"model\":\"local\",\"messages\":[{\"role\":\"user\",\"content\":\"" +
-        JsonEscape(WideToUtf8(prompt)) + sampling;
-
-    std::wstring result;
-    std::string pending;   // 还没凑成完整一行的 SSE
-    std::string leftover;  // 还没凑成完整字符的 UTF-8 尾巴
-
-    bool ok = HttpPostStream(body, [&](const std::string& chunk) {
-        pending += chunk;
-
-        size_t pos;
-        while ((pos = pending.find('\n')) != std::string::npos) {
-            std::string line = pending.substr(0, pos);
-            pending.erase(0, pos + 1);
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-
-            if (line.rfind("data: ", 0) != 0) continue;
-            std::string payload = line.substr(6);
-            if (payload.empty() || payload == "[DONE]") continue;
-
-            std::string delta = ExtractDelta(payload);
-            if (delta.empty()) continue;
-
-            leftover += delta;
-            size_t safe = Utf8CompleteLen(leftover);
-            if (safe == 0) continue;   // 整个字符还没收全，等下一块
-
-            std::wstring piece = Utf8ToWide(leftover.substr(0, safe));
-            leftover.erase(0, safe);
-            result += piece;
-            if (onDelta) onDelta(piece);
-        }
-    }, error);
-
-    if (!ok && result.empty()) return L"";
     return result;
 }
+

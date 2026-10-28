@@ -129,7 +129,8 @@ DWORD WINAPI EngineWarmupThread(LPVOID) {
     cfg.modelPath = FindModelFile();
     cfg.port = g_cfg.port;
     cfg.threads = 4;
-    cfg.ctx = 512;
+    cfg.ctx = g_cfg.ctx;
+    cfg.maxTokens = g_cfg.maxTokens;
     cfg.gpuLayers = 999;
     cfg.temperature = g_cfg.temperature;
 
@@ -185,15 +186,8 @@ DWORD WINAPI WorkThread(LPVOID param) {
     }
     // 其余语种一律交给模型。Hy-MT2 是 33 语模型，法德西韩俄都能自己认，
     // 检测器只负责拦中文、以及给日语标个准源语言，不再做「只支持英日」的限制。
-    // 误全选整页时会取到几千字，硬塞给 ctx=512 的模型只会被截断成半句，
-    // 宁可明确拒绝，也别给出残缺译文
-    if (text.size() > 500) {
-        PostMessageW(g_hwnd, WM_TRANSLATE_SOURCE, 0, (LPARAM)new std::wstring(text));
-        PostMessageW(g_hwnd, WM_TRANSLATE_STATUS, 0,
-                     (LPARAM)new std::wstring(L"选中的内容太长（超过 500 字），请分段选择"));
-        g_busy = false;
-        return 0;
-    }
+    // 长度不设上限：整页选中也照翻，TranslateText 内部会按句子切块逐段请求，
+    // 一块一块流式拼出来。早期版本在这里卡了 500 字上限，纯粹是 ctx=512 撑不住。
 
     // 先把原文填进弹窗，用户能立刻看到确实抓到了什么
     PostMessageW(g_hwnd, WM_TRANSLATE_SOURCE, 0, (LPARAM)new std::wstring(text));
@@ -260,7 +254,13 @@ DWORD WINAPI WorkThread(LPVOID param) {
 }
 
 void DoTranslate() {
-    if (g_busy.exchange(true)) return;  // 上一句还在翻，忽略连按
+    if (g_busy) {
+        // 长文本要译十几秒，这期间热键不能装死：
+        // 先按一次掐掉上一轮，再按一次就翻新选区
+        EngineCancel();
+        return;
+    }
+    g_busy = true;  // 上一句还在翻，忽略连按
 
     POINT pt;
     GetCursorPos(&pt);
@@ -316,7 +316,7 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         case WM_TRANSLATE_STATUS: {
             std::wstring* hint = (std::wstring*)lp;
-            if (PopupIsVisible()) PopupSetResult(*hint);
+            if (PopupIsVisible()) PopupSetStatus(*hint);
             delete hint;
             return 0;
         }
@@ -334,7 +334,12 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_TRANSLATE_DONE: {
             std::wstring* err = (std::wstring*)lp;
             if (!err->empty() && PopupIsVisible()) {
-                PopupSetResult(L"翻译失败：" + *err);
+                if (g_accum.empty()) {
+                    PopupSetStatus(L"翻译失败：" + *err);
+                } else {
+                    // 长文本是分块译的，后段挂了前段照样留着，别整篇换一句报错
+                    PopupSetResult(g_accum + L"\n（后面的内容没译完：" + *err + L"）");
+                }
             }
             delete err;
             return 0;

@@ -34,6 +34,7 @@ void Config::Load(const std::wstring& exeDir) {
     zh2en = ReadInt(ini, L"zh2en", 0) != 0;
     targetLang = zh2en ? L"英语" : L"中文";
     port = ReadInt(ini, L"port", 58088);
+    ctx = ReadInt(ini, L"ctx", 8192);
     maxTokens = ReadInt(ini, L"max_tokens", 256);
     temperature = ReadDouble(ini, L"temperature", 0.7);
     topP = ReadDouble(ini, L"top_p", 0.6);
@@ -52,6 +53,7 @@ void Config::Save(const std::wstring& exeDir) const {
     WriteStr(ini, L"hotkey", hotkey);
     WriteStr(ini, L"zh2en", zh2en ? L"1" : L"0");
     WriteStr(ini, L"port", std::to_wstring(port));
+    WriteStr(ini, L"ctx", std::to_wstring(ctx));
     WriteStr(ini, L"max_tokens", std::to_wstring(maxTokens));
 
     // 浮点统一保留 2 位，避免 0.7000000001 这种噪音

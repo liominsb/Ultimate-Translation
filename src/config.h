@@ -11,7 +11,8 @@ struct Config {
     std::wstring targetLang = L"中文"; // 目标语言，由 zh2en 决定
     bool zh2en = false;               // 反向模式：中文 -> 英文；关闭时是 英/日 -> 中文
     int port = 58088;                 // llama-server 端口
-    int maxTokens = 256;              // 单次翻译最多生成多少 token
+    int ctx = 8192;                   // 引擎上下文窗口，越小越省显存，但会限制单块长度
+    int maxTokens = 256;              // 单块最低生成 token 数，实际按块长放大
     double temperature = 0.7;         // 官方推荐值
     double topP = 0.6;
     int topK = 20;
