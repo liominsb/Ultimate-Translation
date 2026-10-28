@@ -11,6 +11,7 @@ add_executable(TranslateBall WIN32
     src/main.cpp
     src/config.cpp
     src/capture.cpp
+    src/clipboard.cpp
     src/popup.cpp
     src/langdetect.cpp
     src/engine.cpp
